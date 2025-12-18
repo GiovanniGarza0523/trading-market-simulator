@@ -57,10 +57,18 @@ def analyze_gem(ticker):
     try:
         stock = yf.Ticker(ticker)
         news = stock.news
-        if not news: return 0.0, "No recent news found."
         
-        # Prepare news for Grok
-        headlines = [f"- {n['title']}" for n in news[:4]]
+        if not news: 
+            return 0.0, "No recent news found."
+        
+        # --- THE FIX IS HERE ---
+        # We use .get() to safely grab the title. 
+        # If 'title' is missing, it tries 'headline', or defaults to "Market News"
+        headlines = []
+        for n in news[:4]:
+            title = n.get('title', n.get('headline', 'Market News'))
+            headlines.append(f"- {title}")
+        
         news_text = "\n".join(headlines)
         
         # Call Grok
@@ -75,13 +83,15 @@ def analyze_gem(ticker):
         reason = "Analysis failed"
         for line in content.split('\n'):
             if "SCORE:" in line:
-                score = float(line.split("SCORE:")[1].strip())
+                try:
+                    score = float(line.split("SCORE:")[1].strip())
+                except:
+                    score = 0.0
             if "REASON:" in line:
                 reason = line.split("REASON:")[1].strip()
         return score, reason
     except Exception as e:
         return 0.0, f"Error: {str(e)}"
-
 # --- INITIALIZE MEMORY ---
 if 'portfolio' not in st.session_state:
     st.session_state.portfolio = pd.DataFrame(columns=["Ticker", "Shares", "Avg_Cost"])
