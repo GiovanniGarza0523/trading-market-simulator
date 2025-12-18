@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import requests
+import xml.etree.ElementTree as ET # <--- New Library for parsing RSS feeds
 from openai import OpenAI
 
 # --- PAGE CONFIGURATION ---
@@ -15,7 +16,7 @@ else:
     st.error("⚠️ XAI_API_KEY is missing! Please add it to your Streamlit Secrets.")
     st.stop()
 
-# Connect to Grok (Using the Smart & Cheap 'Reasoning' Model)
+# Connect to Grok
 client = OpenAI(
     api_key=XAI_API_KEY,
     base_url="https://api.x.ai/v1",
@@ -50,25 +51,54 @@ def get_market_movers():
         data = requests.get(url, headers=headers).json()
         return [q['symbol'] for q in data['finance']['result'][0]['quotes']]
     except:
+        # Fallback list if scanner is blocked
         return ["NVDA", "TSLA", "PLTR", "MSTR", "COIN", "AMD"]
+
+def get_news_from_rss(ticker):
+    """
+    THE FIX: Fetches news via direct RSS feed to bypass cloud blocking.
+    """
+    try:
+        # Direct Yahoo Finance RSS feed
+        url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
+        
+        # We pretend to be a real browser
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=5)
+        root = ET.fromstring(response.content)
+        
+        # Parse XML for titles
+        headlines = []
+        for item in root.findall('.//item')[:5]:
+            title_node = item.find('title')
+            if title_node is not None:
+                headlines.append(f"- {title_node.text}")
+                
+        return headlines
+    except:
+        return []
 
 def analyze_gem(ticker):
     """Layer 2: The 'Brain' (Grok Reasoning)."""
     try:
-        stock = yf.Ticker(ticker)
-        news = stock.news
+        # 1. Try fetching news via RSS (The new method)
+        headlines = get_news_from_rss(ticker)
         
-        if not news: 
-            return 0.0, "No recent news found."
+        # 2. Fallback to yfinance if RSS fails, or if empty
+        if not headlines:
+            stock = yf.Ticker(ticker)
+            news = stock.news
+            for n in news[:4]:
+                title = n.get('title', n.get('headline', ''))
+                if title: headlines.append(f"- {title}")
         
-        # --- THE FIX IS HERE ---
-        # We use .get() to safely grab the title. 
-        # If 'title' is missing, it tries 'headline', or defaults to "Market News"
-        headlines = []
-        for n in news[:4]:
-            title = n.get('title', n.get('headline', 'Market News'))
-            headlines.append(f"- {title}")
-        
+        # 3. If STILL no news, stop Grok from hallucinating
+        if not headlines:
+            return 0.0, "No news data available for sentiment."
+
         news_text = "\n".join(headlines)
         
         # Call Grok
@@ -92,6 +122,7 @@ def analyze_gem(ticker):
         return score, reason
     except Exception as e:
         return 0.0, f"Error: {str(e)}"
+
 # --- INITIALIZE MEMORY ---
 if 'portfolio' not in st.session_state:
     st.session_state.portfolio = pd.DataFrame(columns=["Ticker", "Shares", "Avg_Cost"])
@@ -141,59 +172,4 @@ with tab1:
         df = st.session_state.portfolio.copy()
         df['Current Price'] = df['Ticker'].apply(lambda t: get_current_price(t))
         df['Value'] = df['Shares'] * df['Current Price']
-        df['P/L'] = df['Value'] - (df['Shares'] * df['Avg_Cost'])
-        
-        # Formatting
-        df['Current Price'] = df['Current Price'].map('${:,.2f}'.format)
-        df['Value'] = df['Value'].map('${:,.2f}'.format)
-        df['P/L'] = df['P/L'].map('${:,.2f}'.format)
-        
-        st.dataframe(df, use_container_width=True)
-        
-        # Total Value Calculation
-        current_holdings_val = st.session_state.portfolio['Shares'].mul(
-            st.session_state.portfolio['Ticker'].apply(lambda t: get_current_price(t))
-        ).sum()
-        total_equity = st.session_state.cash + current_holdings_val
-        st.metric("Total Account Equity", f"${total_equity:,.2f}")
-    else:
-        st.info("No active trades.")
-
-with tab2:
-    st.subheader("🤖 AI Sentiment Scanner")
-    st.write("Finds today's top gainers and uses Grok to score them (-1 to 1).")
-    
-    if st.button("💎 Scan for Gems"):
-        st.session_state.scan_results = []
-        movers = get_market_movers()
-        
-        progress = st.progress(0)
-        status_text = st.empty()
-        
-        for i, ticker in enumerate(movers):
-            status_text.write(f"Analyzing {ticker}...")
-            progress.progress((i + 1) / len(movers))
-            
-            score, reason = analyze_gem(ticker)
-            st.session_state.scan_results.append({
-                "Ticker": ticker,
-                "Score": score,
-                "Reason": reason
-            })
-        status_text.write("Scan Complete!")
-        
-    # Display Results Grid
-    if st.session_state.scan_results:
-        cols = st.columns(3)
-        for i, item in enumerate(st.session_state.scan_results):
-            with cols[i % 3]:
-                score = item['Score']
-                color = "green" if score > 0.3 else "red" if score < -0.3 else "gray"
-                emoji = "🚀" if score > 0.5 else "🐻" if score < -0.5 else "⚖️"
-                
-                with st.container(border=True):
-                    st.markdown(f"### {item['Ticker']} {emoji}")
-                    st.markdown(f"**Score:** :{color}[{score}]")
-                    st.caption(f"{item['Reason']}")
-                    if st.button(f"Trade {item['Ticker']}", key=f"trade_{item['Ticker']}"):
-                        st.sidebar.info(f"Ticker {item['Ticker']} copied to Trading Desk!")
+        df
