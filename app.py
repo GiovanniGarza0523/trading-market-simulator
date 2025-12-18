@@ -172,4 +172,59 @@ with tab1:
         df = st.session_state.portfolio.copy()
         df['Current Price'] = df['Ticker'].apply(lambda t: get_current_price(t))
         df['Value'] = df['Shares'] * df['Current Price']
-        df
+        df['P/L'] = df['Value'] - (df['Shares'] * df['Avg_Cost'])
+        
+        # Formatting
+        df['Current Price'] = df['Current Price'].map('${:,.2f}'.format)
+        df['Value'] = df['Value'].map('${:,.2f}'.format)
+        df['P/L'] = df['P/L'].map('${:,.2f}'.format)
+        
+        st.dataframe(df, use_container_width=True)
+        
+        # Total Value Calculation
+        current_holdings_val = st.session_state.portfolio['Shares'].mul(
+            st.session_state.portfolio['Ticker'].apply(lambda t: get_current_price(t))
+        ).sum()
+        total_equity = st.session_state.cash + current_holdings_val
+        st.metric("Total Account Equity", f"${total_equity:,.2f}")
+    else:
+        st.info("No active trades.")
+
+with tab2:
+    st.subheader("🤖 AI Sentiment Scanner")
+    st.write("Finds today's top gainers and uses Grok to score them (-1 to 1).")
+    
+    if st.button("💎 Scan for Gems"):
+        st.session_state.scan_results = []
+        movers = get_market_movers()
+        
+        progress = st.progress(0)
+        status_text = st.empty()
+        
+        for i, ticker in enumerate(movers):
+            status_text.write(f"Analyzing {ticker}...")
+            progress.progress((i + 1) / len(movers))
+            
+            score, reason = analyze_gem(ticker)
+            st.session_state.scan_results.append({
+                "Ticker": ticker,
+                "Score": score,
+                "Reason": reason
+            })
+        status_text.write("Scan Complete!")
+        
+    # Display Results Grid
+    if st.session_state.scan_results:
+        cols = st.columns(3)
+        for i, item in enumerate(st.session_state.scan_results):
+            with cols[i % 3]:
+                score = item['Score']
+                color = "green" if score > 0.3 else "red" if score < -0.3 else "gray"
+                emoji = "🚀" if score > 0.5 else "🐻" if score < -0.5 else "⚖️"
+                
+                with st.container(border=True):
+                    st.markdown(f"### {item['Ticker']} {emoji}")
+                    st.markdown(f"**Score:** :{color}[{score}]")
+                    st.caption(f"{item['Reason']}")
+                    if st.button(f"Trade {item['Ticker']}", key=f"trade_{item['Ticker']}"):
+                        st.sidebar.info(f"Ticker {item['Ticker']} copied to Trading Desk!")
