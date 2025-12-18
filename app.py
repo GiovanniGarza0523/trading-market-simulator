@@ -9,7 +9,7 @@ import pytz
 from openai import OpenAI
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Robinhood Sim v4", layout="wide", page_icon="💸")
+st.set_page_config(page_title="Robinhood Sim v4.1", layout="wide", page_icon="💸")
 
 # Custom CSS
 st.markdown("""
@@ -105,7 +105,6 @@ def log_history(equity):
     should_log = True
     if last_log:
         last_time = last_log[0]
-        # This was the error spot - fixed indentation below
         if now[:13] == last_time[:13]: 
             should_log = False
             
@@ -116,10 +115,9 @@ def log_history(equity):
 
 init_db()
 
-# --- DATA FETCHING (OPTIMIZED) ---
+# --- DATA FETCHING ---
 @st.cache_data(ttl=3600)
 def load_ticker_list():
-    """Fetches list of tickers, cached for 1 hour."""
     try:
         url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/all/all_tickers.txt"
         response = requests.get(url)
@@ -138,7 +136,6 @@ def load_ticker_list():
 ALL_TICKERS = load_ticker_list()
 
 def get_stock_data(ticker):
-    """Safe individual fetcher."""
     try:
         stock = yf.Ticker(ticker)
         return stock.fast_info['last_price'], stock.history(period="1mo")['Close']
@@ -146,7 +143,6 @@ def get_stock_data(ticker):
         return 0.0, pd.Series()
 
 def fetch_portfolio_prices(tickers):
-    """Downloads all portfolio prices in one go."""
     if not tickers:
         return {}
     try:
@@ -165,12 +161,32 @@ def fetch_portfolio_prices(tickers):
     except:
         return {}
 
+# --- FIXED DIVIDEND FETCHER ---
 def get_dividend_info(ticker):
+    """Fetches real dividend yield with sanity checks."""
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        div_yield = info.get('dividendYield', 0)
-        return (div_yield * 100) if div_yield else 0.0
+        
+        # 1. Try to get the yield
+        div_yield = info.get('dividendYield')
+        
+        # 2. Fallback: If missing, try calculating it
+        if not div_yield:
+            rate = info.get('dividendRate')
+            price = info.get('currentPrice') or info.get('previousClose')
+            if rate and price:
+                div_yield = rate / price
+        
+        if not div_yield:
+            return 0.0
+            
+        # 3. Sanity Logic: Handle Percentage vs Decimal
+        if div_yield < 1:
+            return div_yield * 100
+        else:
+            return div_yield
+
     except:
         return 0.0
 
@@ -212,8 +228,6 @@ portfolio_val = 0.0
 if not pf.empty:
     ticker_list = pf['ticker'].tolist()
     price_map = fetch_portfolio_prices(ticker_list)
-    
-    # Map prices safely
     pf['Current Price'] = pf['ticker'].map(price_map)
     pf['Value'] = pf['shares'] * pf['Current Price']
     portfolio_val = pf['Value'].sum()
@@ -295,12 +309,17 @@ with tab_div:
     d_col1, d_col2 = st.columns([1, 2])
     with d_col1:
         div_ticker = st.selectbox("Pick Stock", ["KO", "JPM", "O", "SCHD", "PEP", "T", "VZ", "MO", "AAPL", "MSFT"])
+        
+        # Get fixed yield
         real_yield = get_dividend_info(div_ticker)
         current_price_div = yf.Ticker(div_ticker).fast_info['last_price']
         
         st.write(f"**{div_ticker}** | Price: ${current_price_div:.2f} | Yield: {real_yield:.2f}%")
         shares_owned = st.number_input("Shares Owned", value=100)
-        user_yield = st.slider("Yield %", 0.0, 15.0, real_yield, 0.1)
+        
+        # Safety clamp for slider initialization
+        safe_yield = min(float(real_yield), 20.0)
+        user_yield = st.slider("Yield %", 0.0, 20.0, safe_yield, 0.1)
         
     with d_col2:
         annual = (shares_owned * current_price_div) * (user_yield / 100)
